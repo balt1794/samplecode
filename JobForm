@@ -1,0 +1,843 @@
+import React, { useEffect } from "react";
+import { Box, Button, Grid, FilledInput, Input, Select, MenuItem, Typography, makeStyles, CircularProgress } from "@material-ui/core";
+import { useState } from "react";
+import { Form } from 'react-bootstrap';
+import { app, db, storage, auth } from "../firebase/config";
+import { ref, uploadBytes, getDownloadURL, uploadBytesResumable } from "firebase/storage";
+import { Editor } from "@tinymce/tinymce-react";
+import { collection, addDoc, updateDoc, serverTimestamp, getDoc, doc } from "firebase/firestore"; 
+import { useNavigate } from "react-router-dom";
+import {loadStripe} from '@stripe/stripe-js';
+import StripeCheckout from 'react-stripe-checkout';
+import axios from "axios";
+import "./tabla.css";
+
+
+
+
+
+    const useStyles = makeStyles((theme) => ({
+        skillChip: {
+            margin: theme.spacing(0.5),
+            padding: theme.spacing(0.75),
+            fontSize: "14.5 px",
+            borderRadius: "5px",
+            fontWeight: 600,
+            border: `1px solid ${theme.palette.secondary.main}`,
+            color: theme.palette.secondary.main,
+            cursor: "pointer",
+    
+            "&:hover": {
+                backgroundColor: "#202124",
+                color:"#fff"
+            }
+        },
+        included: {
+            backgroundColor: "#202124",
+            color: "#fff",
+        }
+        
+    }));
+
+const JobForm = ({ formData, setFormData, jobId }) => {
+    const initState = formData || {
+        title: "",
+        type: "Full Time",
+        companyName: "",
+        location: "Remote",
+        companyUrl: "",
+        country: "",
+        city: "",
+        state: "",
+        zipcode: "",
+        description: "",
+        salarymin: "",
+        salarymax: "",
+        region: "North America 🌎",
+        premium: false,
+        skills: [],
+        }
+
+    const description = formData?.description || "";
+    initState.description = description;
+    const [contentEditor, setContentEditor] = useState(initState.description);
+    const [stripeError, setStripeError] = useState(null);
+    const [isloading, setIsLoading] = useState(false)
+    const [jobDetails, setJobDetails] = useState(initState);
+    const [file, setFile] = useState(null);
+    const [progres, setProgres] = useState(null);
+    const [errors, setErrors] = useState({});
+    const [isSubmit, setIsSubmit] = useState(false);
+    const [error, setError] = useState(false);
+    const [selectedOption, setSelectedOption] = useState(null);
+
+
+// This function takes a skill as an argument and checks if it's included in the skills array of jobDetails.
+    const addRemoveSkill = (skill) =>
+    jobDetails.skills.includes(skill)
+    
+    // If the skill is already present, remove it from the skills array using the filter method and update the state using the setJobDetails function.
+    ? setJobDetails((oldState) => ({
+        ...oldState,
+        skills: oldState.skills.filter((s) => s !== skill),
+       }))
+    // If the skill is not present, add it to the skills array using the concat method and update the state using the setJobDetails function.
+       : setJobDetails((oldState) => ({
+           ...oldState,
+           skills: oldState.skills.concat(skill),
+       }));
+
+
+    const navigate = useNavigate();
+
+    const handleEditorChange = (content, editor) => {
+        //console.log('Content was updated:', content);
+        setContentEditor(content);
+      }
+
+    const [image, setImage] = useState(null);
+    const [url, setUrl] = useState(null);
+
+// Set up an effect that runs when the file input changes (only when the 'file' variable changes)
+    useEffect(() => {
+        // Define a function to handle file uploads
+        const uploadFile = () =>{
+            // Generate a unique name for the file based on the current time and its original name
+            const name =  new Date().getTime() + file.name;
+            // Create a reference to the storage location where the file will be uploaded
+            const storageRef = ref(storage, file.name);
+            // Create a task that can be used to monitor the upload progress and manage the upload process
+            const uploadTask = uploadBytesResumable(storageRef, file);
+            
+            // Set up a listener to monitor the upload progress and update the progress bar
+            uploadTask.on("state_changed", (snapshot) => {
+                const progres = (snapshot.bytesTransferred/snapshot.totalBytes)*100;
+                setProgres(progres);
+                switch(snapshot.state){
+                    case "paused":
+                        console.log("Upload is Pause");
+                        break;
+                    case "running":
+                        console.log("Running");
+                        break;
+                    default:
+                        break;
+                }
+            }, (error) =>{
+                // Handle errors that may occur during the upload process
+                console.log(error)
+            },
+            () =>{
+                // Once the upload is complete, get the download URL for the file and update the state variable with the new URL
+                getDownloadURL(uploadTask.snapshot.ref).then((downloadURL)=>{
+                    setJobDetails((prev) => ({...prev, img: downloadURL}));
+                })
+            }
+            );
+        };
+        // If a file has been selected, call the uploadFile function to begin the upload process
+        file && uploadFile();
+    }, [file])
+
+   
+    const handleChange = (e) => {
+       setJobDetails({...jobDetails, [e.target.name]: e.target.value})
+    };
+
+
+
+    const handleSubmit1 = async (e) =>{
+  
+        const timestamp = Date.now()
+        if(jobDetails.title.length == 0 
+            && jobDetails.companyName.length == 0 
+            && jobDetails.companyUrl.length == 0
+            && jobDetails.country.length == 0
+            && jobDetails.city.length == 0
+            && jobDetails.state.length == 0
+            && jobDetails.zipcode.length == 0
+            && jobDetails.skills.length == 0 
+            
+            ){
+            setError(true)
+        }
+    
+        for( const field in jobDetails){
+            if(typeof jobDetails[field] === "string" && !jobDetails[field])
+                return;
+            if(!jobDetails.skills.length)
+            return;
+        }
+       e.preventDefault();
+        setIsSubmit(true);
+    
+    
+        if (jobId) {
+            // update the existing job post
+            //console.log({jobId});
+         
+            try {
+           
+            await updateDoc(doc(db, "jobs", jobDetails.id), {
+              ...jobDetails,
+              timestamp: serverTimestamp()
+            });
+    
+           // console.log("Successfully updated job: ", jobId, {
+             //   ...jobDetails,
+               // timestamp: serverTimestamp()
+             // });
+        
+            const job = await getDoc(collection(db, "jobs"), jobId);
+            if (!job) {
+                //console.error("The job was not updated.");
+                return;
+              }
+        } catch (err) {
+           // console.error("Error updating job: ", err);
+        }
+            // navigate to the dashboard
+            window.location.href = "/dashboard";
+          } else {
+        try {
+          const stripeResponse = await stripePayment2();
+          const currentUser = auth.currentUser;
+          if (!currentUser) {
+            window.location.href = "/signin";
+            return;
+          }
+      await addDoc(collection(db, "jobs"), {
+        
+            posterId: currentUser.uid,
+            ...jobDetails,
+            timestamp: serverTimestamp(),
+            payment_intent: stripeResponse.data.payment_intent,
+            status: "DRAFT",
+            postedOn: new Intl.DateTimeFormat('en-US', {year: 'numeric', month: 'long',day: '2-digit'}).format(timestamp),
+            premium: false,
+            jobId: `job-${timestamp}-${Math.random().toString(36).substr(2, 5)}`
+          });
+    
+    
+    
+    
+          window.location.href = stripeResponse?.data?.url;
+        } catch (err) {
+          console.log(err);
+        }
+          }
+        // navigate("/");
+      };
+
+      const handleSubmit2 = async (e) =>{
+  
+        const timestamp = Date.now()
+        if(jobDetails.title.length == 0 
+            && jobDetails.companyName.length == 0 
+            && jobDetails.companyUrl.length == 0
+            && jobDetails.country.length == 0
+            && jobDetails.city.length == 0
+            && jobDetails.state.length == 0
+            && jobDetails.zipcode.length == 0
+            && jobDetails.skills.length == 0 
+    
+            ){
+            setError(true)
+        }
+    
+        for( const field in jobDetails){
+            if(typeof jobDetails[field] === "string" && !jobDetails[field])
+                return;
+            if(!jobDetails.skills.length)
+            return;
+        }
+       e.preventDefault();
+        setIsSubmit(true);
+    
+    
+        if (jobId) {
+            // update the existing job post
+            console.log({jobId});
+         
+            try {
+           
+            await updateDoc(doc(db, "jobs", jobDetails.id), {
+              ...jobDetails,
+              timestamp: serverTimestamp()
+            });
+    
+            console.log("Successfully updated job: ", jobId, {
+                ...jobDetails,
+                timestamp: serverTimestamp()
+              });
+        
+            const job = await getDoc(collection(db, "jobs"), jobId);
+            if (!job) {
+                console.error("The job was not updated.");
+                return;
+              }
+        } catch (err) {
+            console.error("Error updating job: ", err);
+        }
+            // navigate to the dashboard
+            window.location.href = "/dashboard";
+          } else {
+
+    try {
+      const stripeResponse = await stripePayment3();
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        window.location.href = "/signin";
+        return;
+      }
+
+
+
+      await addDoc(collection(db, "jobs"), {
+        posterId: currentUser.uid,
+        ...jobDetails,
+        timestamp: serverTimestamp(),
+        payment_intent: stripeResponse.data.payment_intent,
+        status: "DRAFT",
+        postedOn: new Intl.DateTimeFormat('en-US', {year: 'numeric', month: 'long',day: '2-digit'}).format(timestamp),
+        premium: true,
+        jobId: `job-${timestamp}-${Math.random().toString(36).substr(2, 5)}`
+      });
+
+      window.location.href = stripeResponse?.data?.url;
+    } catch (err) {
+      console.log(err);
+    }
+
+    // navigate("/");
+  }
+
+
+      };
+
+
+
+   const classes = useStyles();
+   const skills = [
+    "HTML",
+    "CSS",
+    "JavaScript",
+    "Java",
+    "Python",
+    "C#",
+    "C++",
+    "React",
+    "Node",
+    "Flutter",
+    "Django",
+    "Vue",
+    "Linux",
+    "Typescript",
+    "Firebase",
+    "MongoDB",
+    "PostgreSQL",
+    "MySQL",
+    "Docker",
+    "AWS",
+    "SQL",
+    "Git",
+    "GitHub",
+    ".NET",
+    "Ruby",
+    "PHP",
+    "Go",
+    "Flask",
+    "Kubernetes",
+    "NodeJS",
+    "Swift",
+    "jQuery",
+    "Rust",
+];
+const [product] = React.useState({
+    name: "Job Posting",
+    price: 30 * 100,
+    description: "30-day Job Post on HireJrDevs + Email to +1000 Junior Developers"
+  });
+
+
+ async function stripePayment2() {
+    localStorage.setItem("jobDetails", JSON.stringify(jobDetails));
+
+    try {
+      const response = await axios.post(
+        //"https://codesandbox.io/create-checkout-session", 
+        { price: "test" }
+      );
+      console.log("Resposne::", response);
+      return response;
+    } catch (err) {
+      console.log("Error::", err);
+    }
+    return null;
+  }
+
+  async function stripePayment3() {
+    localStorage.setItem("jobDetails", JSON.stringify(jobDetails));
+
+    try {
+      const response = await axios.post(
+        //"https://codesandbox.io/create-checkout-session", 
+        { price: "test" }
+      );
+      console.log("Resposne::", response);
+      return response;
+    } catch (err) {
+      console.log("Error::", err);
+    }
+    return null;
+  }
+
+  const hagale =(e) =>{
+    setSelectedOption(e.target.value);
+    window.scrollBy(0, 100);
+    
+   
+    
+    }
+    
+    return(
+        <>
+           
+    <form id="live_form">
+        <div className="form-group">
+        <select
+          className="form-select"
+          onChange={hagale}
+        >
+          <option selected >Choose an option</option>
+          <option value="1">Basic - $149</option>
+          <option value="2">Premium - $199</option>
+        </select>
+      </div>
+        
+      {selectedOption === "1"  && (
+            <div className="container mt-5 mb-5 px-5 py-5" style={{backgroundColor:"white", borderRadius:"6px"}}>
+            <Form onSubmit={handleSubmit1}>
+                <Grid container spacing={2}>
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange}  name="title" value={jobDetails.title} autoComplete="off" placeholder="Job Title*" disableUnderline fullWidth />
+                        {error&&jobDetails.title.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={6}>
+                        <Select onChange={handleChange} name="type" value={jobDetails.type} fullWidth disableUnderline variant = "filled">
+                            <MenuItem value="Full Time">Full Time</MenuItem>
+                            <MenuItem value="Part time">Part time</MenuItem>
+                            <MenuItem value="Contract">Contract</MenuItem>
+                        </Select>
+                    </Grid>
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange}  name="companyName" value={jobDetails.companyName} autoComplete="off" placeholder="Company Name*" disableUnderline fullWidth />
+                        {error&&jobDetails.companyName.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange} name="companyUrl" value={jobDetails.companyUrl} autoComplete="off" placeholder="Job URL*" disableUnderline fullWidth />
+                        {error&&jobDetails.companyUrl.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange} name="country" value={jobDetails.country} autoComplete="off" placeholder="Country*" disableUnderline fullWidth />
+                        {error&&jobDetails.country.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange} name="city" value={jobDetails.city} autoComplete="off" placeholder="City*" disableUnderline fullWidth />
+                        {error&&jobDetails.city.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={2}>
+                        <FilledInput onChange={handleChange} name="state" value={jobDetails.state} autoComplete="off" placeholder="State*" disableUnderline fullWidth />
+                        {error&&jobDetails.state.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={2}>
+                        <FilledInput onChange={handleChange} name="zipcode" value={jobDetails.zipcode} autoComplete="off" placeholder="Zip Code*" disableUnderline fullWidth />
+                        {error&&jobDetails.zipcode.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={4}>
+                        <Select onChange={handleChange} name="location" value={jobDetails.location} fullWidth disableUnderline variant = "filled" >
+                            <MenuItem value="Remote">Remote</MenuItem>
+                            <MenuItem value="In-office">In-office</MenuItem>
+                        </Select>
+                    </Grid>
+                    <Grid item xs={4}>
+                        <Select onChange={handleChange} name="region" value={jobDetails.region} fullWidth disableUnderline variant = "filled" >
+                            <MenuItem value="North America 🌎">North America 🌎</MenuItem>
+                            <MenuItem value="Europe">Europe 🇪🇺</MenuItem>
+                            <MenuItem value="Latin America">Latin America 🏔️ </MenuItem>
+                            <MenuItem value="Worldwide">Worldwide 🌏</MenuItem>
+                        </Select>
+                    </Grid>
+                
+
+              
+                  
+                    <Grid item xs={12}>
+                        <Editor
+                            name="description"
+                            plugins= "lists advlist"
+                            init={{
+                            height: 500,
+                            menubar: false,
+                            toolbar: 'undo redo | formatselect | bold italic | bullist numlist | outdent indent | h1 h2 | '
+                            }}
+                            value={jobDetails.description = contentEditor}
+                            onEditorChange={handleEditorChange}
+                        />
+                    </Grid>
+                    <Grid item xs={12} >
+                  
+                  <div className="boxy">
+                      
+<input type="file" className="form-control" id="customFile" onChange={(e) => setFile(e.target.files[0])} />
+<label class="form-label" for="customFile">  <Typography>*Logo size recommended is 500x500</Typography></label>
+</div>
+                  </Grid>
+                    <Grid item xs={6}>
+                    <Typography>Salary Min*</Typography>
+                        <Select onChange={handleChange} name="salarymin" value={jobDetails.salarymin} fullWidth disableUnderline variant = "filled" >
+                            <MenuItem value="-">-</MenuItem>
+                            <MenuItem value="$10,000">$10,000</MenuItem>
+                            <MenuItem value="$20,000">$20,000</MenuItem>
+                            <MenuItem value="$30,000">$30,000</MenuItem>
+                            <MenuItem value="$40,000">$40,000</MenuItem>
+                            <MenuItem value="$50,000">$50,000</MenuItem>
+                            <MenuItem value="$60,000">$60,000</MenuItem>
+                            <MenuItem value="$70,000">$70,000</MenuItem>
+                            <MenuItem value="$80,000">$80,000</MenuItem>
+                            <MenuItem value="$90,000">$90,000</MenuItem>
+                            <MenuItem value="$100,000">$100,000</MenuItem>
+                            <MenuItem value="$110,000">$110,000</MenuItem>
+                            <MenuItem value="$120,000">$120,000</MenuItem>
+                            <MenuItem value="$130,000">$130,000</MenuItem>
+                            <MenuItem value="$140,000">$140,000</MenuItem>
+                            <MenuItem value="$150,000">$150,000</MenuItem>
+                            <MenuItem value="$160,000">$160,000</MenuItem>
+                            <MenuItem value="$170,000">$170,000</MenuItem>
+                            <MenuItem value="$180,000">$180,000</MenuItem>
+                            <MenuItem value="$190,000">$190,000</MenuItem>
+                        </Select>
+                    </Grid>
+                    <Grid item xs={6}>
+                    <Typography>Salary Max*</Typography>
+                    <Select onChange={handleChange} name="salarymax" value={jobDetails.salarymax} fullWidth disableUnderline variant = "filled" >
+                            <MenuItem value="-">-</MenuItem>
+                            <MenuItem value="$10,000">$10,000</MenuItem>
+                            <MenuItem value="$20,000">$20,000</MenuItem>
+                            <MenuItem value="$30,000">$30,000</MenuItem>
+                            <MenuItem value="$40,000">$40,000</MenuItem>
+                            <MenuItem value="$50,000">$50,000</MenuItem>
+                            <MenuItem value="$60,000">$60,000</MenuItem>
+                            <MenuItem value="$70,000">$70,000</MenuItem>
+                            <MenuItem value="$80,000">$80,000</MenuItem>
+                            <MenuItem value="$90,000">$90,000</MenuItem>
+                            <MenuItem value="$100,000">$100,000</MenuItem>
+                            <MenuItem value="$110,000">$110,000</MenuItem>
+                            <MenuItem value="$120,000">$120,000</MenuItem>
+                            <MenuItem value="$130,000">$130,000</MenuItem>
+                            <MenuItem value="$140,000">$140,000</MenuItem>
+                            <MenuItem value="$150,000">$150,000</MenuItem>
+                            <MenuItem value="$160,000">$160,000</MenuItem>
+                            <MenuItem value="$170,000">$170,000</MenuItem>
+                            <MenuItem value="$180,000">$180,000</MenuItem>
+                            <MenuItem value="$190,000">$190,000</MenuItem>
+                        </Select>
+                    </Grid>
+                   
+                </Grid>
+                <Box mt={2} mb={3}>
+                    <Typography>Skills*</Typography>
+                    <Grid container alignItems="center">
+                        {skills.map((skill) => (
+                            <Box display="flex" onClick={() => addRemoveSkill(skill)} className={`${classes.skillChip} ${jobDetails.skills.includes(skill) && classes.included}`} key={skill}>
+                                {skill}
+                            </Box>
+                            
+                        ))}
+                        {error&&jobDetails.skills.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+
+                   </Grid>
+                </Box>
+          
+          
+                <Box color="red" width="100%" display="flex" justifyContent="space-between" alignItems="center">
+                    <Typography>*Required Fields</Typography>
+                    {jobId? 
+                    <button 
+                    
+                    
+                    className="formButtons" type="submit" 
+                    disabled={!jobDetails.title 
+                        || !jobDetails.companyName
+                        || !jobDetails.companyUrl
+                        || !jobDetails.country
+                        || !jobDetails.city
+                        || !jobDetails.state
+                        || !jobDetails.zipcode
+                        || jobDetails.skills.length == 0 
+                        || !jobDetails.salarymin
+                        || !jobDetails.salarymax
+                        
+                        
+                        }  >
+                    
+                        
+                    Update Job
+                     
+                     </button> :   <Button 
+                variant="contained" type="submit" disableElevation color="primary"
+                 disabled={!jobDetails.title 
+                     || !jobDetails.companyName
+                     || !jobDetails.companyUrl
+                     || !jobDetails.country
+                     || !jobDetails.city
+                     || !jobDetails.state
+                     || !jobDetails.zipcode
+                     || jobDetails.skills.length == 0 
+                     || !jobDetails.salarymin
+                     || !jobDetails.salarymax
+                     
+                     
+                     }  >
+                 
+                    Post Job
+      
+                  
+                     </Button>}
+                </Box>
+               
+                </Form>
+                </div>
+              
+           
+    )
+}
+{selectedOption === "2" && (
+        
+        <div className="container mt-5 mb-5 px-5 py-5" style={{backgroundColor:"white", borderRadius:"6px"}}>
+            <Form onSubmit={handleSubmit2}>
+                <Grid container spacing={2}>
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange}  name="title" value={jobDetails.title} autoComplete="off" placeholder="Job Title*" disableUnderline fullWidth />
+                        {error&&jobDetails.title.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={6}>
+                        <Select onChange={handleChange} name="type" value={jobDetails.type} fullWidth disableUnderline variant = "filled">
+                            <MenuItem value="Full Time">Full Time</MenuItem>
+                            <MenuItem value="Part time">Part time</MenuItem>
+                            <MenuItem value="Contract">Contract</MenuItem>
+                        </Select>
+                    </Grid>
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange}  name="companyName" value={jobDetails.companyName} autoComplete="off" placeholder="Company Name*" disableUnderline fullWidth />
+                        {error&&jobDetails.companyName.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange} name="companyUrl" value={jobDetails.companyUrl} autoComplete="off" placeholder="Job URL*" disableUnderline fullWidth />
+                        {error&&jobDetails.companyUrl.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange} name="country" value={jobDetails.country} autoComplete="off" placeholder="Country*" disableUnderline fullWidth />
+                        {error&&jobDetails.country.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={6}>
+                        <FilledInput onChange={handleChange} name="city" value={jobDetails.city} autoComplete="off" placeholder="City*" disableUnderline fullWidth />
+                        {error&&jobDetails.city.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={2}>
+                        <FilledInput onChange={handleChange} name="state" value={jobDetails.state} autoComplete="off" placeholder="State*" disableUnderline fullWidth />
+                        {error&&jobDetails.state.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    
+                    <Grid item xs={2}>
+                        <FilledInput onChange={handleChange} name="zipcode" value={jobDetails.zipcode} autoComplete="off" placeholder="Zip Code*" disableUnderline fullWidth />
+                        {error&&jobDetails.zipcode.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+                    </Grid>
+                    <Grid item xs={4}>
+                        <Select onChange={handleChange} name="location" value={jobDetails.location} fullWidth disableUnderline variant = "filled" >
+                            <MenuItem value="Remote">Remote</MenuItem>
+                            <MenuItem value="In-office">In-office</MenuItem>
+                        </Select>
+                    </Grid>
+                    <Grid item xs={4}>
+                        <Select onChange={handleChange} name="region" value={jobDetails.region} fullWidth disableUnderline variant = "filled" >
+                            <MenuItem value="North America 🌎">North America 🌎</MenuItem>
+                            <MenuItem value="Europe">Europe 🇪🇺</MenuItem>
+                            <MenuItem value="Latin America">Latin America 🏔️ </MenuItem>
+                            <MenuItem value="Worldwide">Worldwide 🌏</MenuItem>
+                        </Select>
+                    </Grid>
+                
+
+              
+                  
+                    <Grid item xs={12}>
+                        <Editor
+                            name="description"
+                            plugins= "lists advlist"
+                            init={{
+                            height: 500,
+                            menubar: false,
+                            toolbar: 'undo redo | formatselect | bold italic | bullist numlist | outdent indent | h1 h2 | '
+                            }}
+                            value={jobDetails.description = contentEditor}
+                            onEditorChange={handleEditorChange}
+                        />
+                    </Grid>
+                    <Grid item xs={12} >
+                  
+                  <div className="boxy">
+                      
+<input type="file" className="form-control" id="customFile" onChange={(e) => setFile(e.target.files[0])} />
+<label class="form-label" for="customFile">  <Typography>*Logo size recommended is 500x500</Typography></label>
+</div>
+                  </Grid>
+                    <Grid item xs={6} >
+                    <Typography>Salary Min*</Typography>
+                        <Select onChange={handleChange} name="salarymin" value={jobDetails.salarymin} fullWidth disableUnderline variant = "filled" >
+                            <MenuItem value="-">-</MenuItem>
+                            <MenuItem value="$10,000">$10,000</MenuItem>
+                            <MenuItem value="$20,000">$20,000</MenuItem>
+                            <MenuItem value="$30,000">$30,000</MenuItem>
+                            <MenuItem value="$40,000">$40,000</MenuItem>
+                            <MenuItem value="$50,000">$50,000</MenuItem>
+                            <MenuItem value="$60,000">$60,000</MenuItem>
+                            <MenuItem value="$70,000">$70,000</MenuItem>
+                            <MenuItem value="$80,000">$80,000</MenuItem>
+                            <MenuItem value="$90,000">$90,000</MenuItem>
+                            <MenuItem value="$100,000">$100,000</MenuItem>
+                            <MenuItem value="$110,000">$110,000</MenuItem>
+                            <MenuItem value="$120,000">$120,000</MenuItem>
+                            <MenuItem value="$130,000">$130,000</MenuItem>
+                            <MenuItem value="$140,000">$140,000</MenuItem>
+                            <MenuItem value="$150,000">$150,000</MenuItem>
+                            <MenuItem value="$160,000">$160,000</MenuItem>
+                            <MenuItem value="$170,000">$170,000</MenuItem>
+                            <MenuItem value="$180,000">$180,000</MenuItem>
+                            <MenuItem value="$190,000">$190,000</MenuItem>
+                        </Select>
+                    </Grid>
+                    <Grid item xs={6} >
+                    <Typography>Salary Max*</Typography>
+                    <Select onChange={handleChange} name="salarymax" value={jobDetails.salarymax} fullWidth disableUnderline variant = "filled" >
+                            <MenuItem value="-">-</MenuItem>
+                            <MenuItem value="$10,000">$10,000</MenuItem>
+                            <MenuItem value="$20,000">$20,000</MenuItem>
+                            <MenuItem value="$30,000">$30,000</MenuItem>
+                            <MenuItem value="$40,000">$40,000</MenuItem>
+                            <MenuItem value="$50,000">$50,000</MenuItem>
+                            <MenuItem value="$60,000">$60,000</MenuItem>
+                            <MenuItem value="$70,000">$70,000</MenuItem>
+                            <MenuItem value="$80,000">$80,000</MenuItem>
+                            <MenuItem value="$90,000">$90,000</MenuItem>
+                            <MenuItem value="$100,000">$100,000</MenuItem>
+                            <MenuItem value="$110,000">$110,000</MenuItem>
+                            <MenuItem value="$120,000">$120,000</MenuItem>
+                            <MenuItem value="$130,000">$130,000</MenuItem>
+                            <MenuItem value="$140,000">$140,000</MenuItem>
+                            <MenuItem value="$150,000">$150,000</MenuItem>
+                            <MenuItem value="$160,000">$160,000</MenuItem>
+                            <MenuItem value="$170,000">$170,000</MenuItem>
+                            <MenuItem value="$180,000">$180,000</MenuItem>
+                            <MenuItem value="$190,000">$190,000</MenuItem>
+                        </Select>
+                    </Grid>
+                   
+                </Grid>
+                <Box mt={2} mb={3}>
+                    <Typography>Skills*</Typography>
+                    <Grid container alignItems="center">
+                        {skills.map((skill) => (
+                          
+                            <Box display="flex" onClick={() => addRemoveSkill(skill)} className={`${classes.skillChip} ${jobDetails.skills.includes(skill) && classes.included}`} key={skill}>
+                                {skill}
+                            </Box>
+                            
+                      
+                            
+                        ))}
+                        {error&&jobDetails.skills.length<=0?
+                        <label className="text-danger">This field is required</label>:""}
+
+                   </Grid>
+                </Box>
+          
+          
+                <Box color="red" width="100%" display="flex" justifyContent="space-between" alignItems="center">
+                    <Typography>*Required Fields</Typography>
+                    {jobId? 
+                    <button 
+                 
+                    
+                    className="formButtons" type="submit" 
+                    disabled={!jobDetails.title 
+                        || !jobDetails.companyName
+                        || !jobDetails.companyUrl
+                        || !jobDetails.country
+                        || !jobDetails.city
+                        || !jobDetails.state
+                        || !jobDetails.zipcode
+                        || jobDetails.skills.length == 0 
+                        || !jobDetails.salarymin
+                        || !jobDetails.salarymax
+                        
+                        
+                        }  >
+                    
+                        
+                    Update Job
+                     
+                     </button> :   <Button 
+                     
+                   
+                     variant="contained" type="submit" disableElevation color="primary"
+                     disabled={!jobDetails.title 
+                         || !jobDetails.companyName
+                         || !jobDetails.companyUrl
+                         || !jobDetails.country
+                         || !jobDetails.city
+                         || !jobDetails.state
+                         || !jobDetails.zipcode
+                         || jobDetails.skills.length == 0 
+                         || !jobDetails.salarymin
+                         || !jobDetails.salarymax
+                         
+                         
+                         }  >
+                     
+                        Post Job
+          
+                      
+                         </Button>}
+                </Box>
+               
+                </Form>
+                </div>
+              
+      )}
+    </form>
+
+            
+           </>
+    )
+}
+
+
+export default JobForm;
